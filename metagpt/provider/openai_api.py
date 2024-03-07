@@ -6,10 +6,11 @@
 @Modified By: mashenquan, 2023/11/21. Fix bug: ReadTimeout.
 @Modified By: mashenquan, 2023/12/1. Fix bug: Unclosed connection caused by openai 0.x.
 """
+from __future__ import annotations
 
 import json
 import re
-from typing import AsyncIterator, Optional, Union
+from typing import Optional, Union
 
 from openai import APIConnectionError, AsyncOpenAI, AsyncStream
 from openai._base_client import AsyncHttpxClientWrapper
@@ -29,25 +30,14 @@ from metagpt.provider.base_llm import BaseLLM
 from metagpt.provider.constant import GENERAL_FUNCTION_SCHEMA
 from metagpt.provider.llm_provider_registry import register_provider
 from metagpt.schema import Message
-from metagpt.utils.common import CodeParser, decode_image
-from metagpt.utils.cost_manager import CostManager, Costs, TokenCostManager
+from metagpt.utils.common import CodeParser, decode_image, log_and_reraise
+from metagpt.utils.cost_manager import CostManager
 from metagpt.utils.exceptions import handle_exception
 from metagpt.utils.token_counter import (
     count_message_tokens,
     count_string_tokens,
     get_max_completion_tokens,
 )
-
-
-def log_and_reraise(retry_state):
-    logger.error(f"Retry attempts exhausted. Last exception: {retry_state.outcome.exception()}")
-    logger.warning(
-        """
-Recommend going to https://deepwisdom.feishu.cn/wiki/MsGnwQBjiif9c3koSJNcYaoSnu4#part-XdatdVlhEojeAfxaaEZcMV3ZniQ
-See FAQ 5.8
-"""
-    )
-    raise retry_state.outcome.exception()
 
 
 @register_provider([LLMType.OPENAI, LLMType.FIREWORKS, LLMType.OPEN_LLM, LLMType.MOONSHOT, LLMType.MISTRAL])
@@ -63,6 +53,7 @@ class OpenAILLM(BaseLLM):
     def _init_client(self):
         """https://github.com/openai/openai-python#async-usage"""
         self.model = self.config.model  # Used in _calc_usage & _cons_kwargs
+        self.pricing_plan = self.config.pricing_plan or self.model
         kwargs = self._make_client_kwargs()
         self.aclient = AsyncOpenAI(**kwargs)
 
@@ -269,10 +260,9 @@ class OpenAILLM(BaseLLM):
         if not self.config.calc_usage:
             return usage
 
-        model = self.model if not isinstance(self.cost_manager, TokenCostManager) else "open-llm-model"
         try:
-            usage.prompt_tokens = count_message_tokens(messages, model)
-            usage.completion_tokens = count_string_tokens(rsp, model)
+            usage.prompt_tokens = count_message_tokens(messages, self.pricing_plan)
+            usage.completion_tokens = count_string_tokens(rsp, self.pricing_plan)
         except Exception as e:
             logger.warning(f"usage calculation failed: {e}")
 
